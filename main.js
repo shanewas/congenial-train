@@ -118,6 +118,30 @@ app.get("/callback", (req, res) => {
   );
 });
 
+// Set up the fail-safe route
+app.use("/error", (err, req, res, next) => {
+  // Handle the error and return a suitable response to the client
+  res
+    .status(500)
+    .send({ error: "An error occurred while processing the request" });
+});
+
+// Set up a route for creating a resource
+app.post("/resources", (req, res) => {
+  try {
+    // Code to create the resource goes here
+    res.status(201).send();
+  } catch (error) {
+    // Redirect to the fail-safe route if an error occurs
+    res.redirect("/error");
+  }
+});
+
+app.use((req, res, next) => {
+  // Set up a catch-all route to handle requests for non-existent routes
+  res.status(404).send({ error: "Route not found" });
+});
+
 app.listen(3000, () => {
   console.log("API listening on port 3000");
 });
