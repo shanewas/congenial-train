@@ -1,5 +1,8 @@
 const express = require("express");
 const session = require("express-session");
+const { connect } = require("./database/connect.js");
+const { select } = require("./database/select.js");
+
 const app = express();
 const { dotenv, path, root, axios, request } = require("./imgur/config");
 
@@ -116,6 +119,51 @@ app.get("/callback", (req, res) => {
       return res.redirect("/");
     }
   );
+});
+
+app.get("/data", async (req, res) => {
+  try {
+    const db = await connect();
+    const tableName = "swift";
+    const columns = [
+      "id",
+      "title",
+      "description",
+      "datetime",
+      "type",
+      "animated",
+      "width",
+      "height",
+      "size",
+      "views",
+      "bandwidth",
+      "vote",
+      "favorite",
+      "nsfw",
+      "section",
+      "account_url",
+      "account_id",
+      "is_ad",
+      "in_most_viral",
+      "has_sound",
+      "tags",
+      "ad_type",
+      "ad_url",
+      "edited",
+      "in_gallery",
+      "deletehash",
+      "name",
+      "link",
+    ];
+    const where = null; // optional WHERE clause
+
+    const rows = await select(db, tableName, columns, where);
+    //set json data to response
+    return res.send(rows);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send("Error retrieving data");
+  }
 });
 
 // Set up the fail-safe route

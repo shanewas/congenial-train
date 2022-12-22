@@ -1,9 +1,8 @@
-const { dotenv, path, root, axios, request } = require('../imgur/config');
+const { dotenv, path, root, axios, request } = require("../imgur/config");
 const { connect } = require("../database/connect.js");
 const { createTable } = require("../database/createTables");
 const { insert } = require("../database/insert");
 // Set the path to the root folder
-
 
 let json = {
   data: {
@@ -185,7 +184,6 @@ async function uploadImage(image, imageInfo) {
 module.exports = {
   uploadImage,
 };
-
 
 //postdata
 // {

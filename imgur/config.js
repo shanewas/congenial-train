@@ -13,5 +13,5 @@ module.exports = {
   path,
   root,
   axios,
-  request
+  request,
 };
