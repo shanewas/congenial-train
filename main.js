@@ -1,25 +1,13 @@
-const express = require("express");
-const session = require("express-session");
-const { connect } = require("./database/connect.js");
-const { select } = require("./database/select.js");
 
-const app = express();
-const { dotenv, path, root, axios, request } = require("./imgur/config");
+// Generate a JWT for the user
+function generateJWT(user) {
+  return jwt.sign(user, "secret", { expiresIn: "1h" });
+}
 
-app.use(
-  session({
-    secret: `${process.env.IMGUR_SECRET}`, // a secret key to sign the session ID cookie
-    resave: false, // don't save the session if it hasn't changed
-    saveUninitialized: false, // don't create a session if the user hasn't logged in
-  })
-);
-
-const { uploadImage } = require("./imgur/upload");
-const { deleteImage } = require("./imgur/delete");
-const bodyParser = require("body-parser");
-// ...
-app.use(bodyParser.json()); // for parsing application/json
-app.use(bodyParser.urlencoded({ extended: true })); // for parsing application/x-www-form-urlencoded
+app.post("/send-email", (req, res) => {
+  mail.sendEmail(req.body.to, req.body.subject, req.body.text);
+  res.send({ message: "Email sent successfully" });
+});
 
 app.post("/upload", async (req, res) => {
   try {
@@ -75,6 +63,23 @@ app.delete("/delete", (req, res) => {
   }
 });
 
+app.post("/users", (req, res) => {
+  // Create a new document in the 'users' collection
+  db.collection("users")
+    .add({
+      name: req.body.name,
+      email: req.body.email,
+    })
+    .then((doc) => {
+      // Document created successfully
+      res.send({ message: "User added successfully", docId: doc.id });
+    })
+    .catch((error) => {
+      // Error creating document
+      res.send({ error: "Error adding user: " + error });
+    });
+});
+
 // Default route.
 app.get("/", (req, res) => {
   // Check if the user is logged in.
@@ -90,36 +95,8 @@ app.get("/", (req, res) => {
   }
 });
 
-app.get("/callback", (req, res) => {
-  const { code } = req.query;
 
-  // Exchange the authorization code for an access token.
-  request.post(
-    {
-      url: "https://api.imgur.com/oauth2/token",
-      form: {
-        grant_type: "authorization_code",
-        code,
-        client_id: process.env.IMGUR_CLIENT_ID,
-        client_secret: process.env.IMGUR_SECRET,
-      },
-    },
-    (error, response, body) => {
-      if (error) {
-        return res.status(500).send(error);
-      }
 
-      const { access_token, refresh_token, expires_in } = JSON.parse(body);
-
-      // Save the access token and refresh token in the session.
-      req.session.accessToken = access_token;
-      req.session.refreshToken = refresh_token;
-
-      // Redirect the user to the home page.
-      return res.redirect("/");
-    }
-  );
-});
 
 app.get("/data", async (req, res) => {
   try {
@@ -166,30 +143,124 @@ app.get("/data", async (req, res) => {
   }
 });
 
-// Set up the fail-safe route
-app.use("/error", (err, req, res, next) => {
-  // Handle the error and return a suitable response to the client
-  res
-    .status(500)
-    .send({ error: "An error occurred while processing the request" });
+app.post("/login", (req, res) => {
+  // Look up the user's hashed password in the database
+  db.collection("users")
+    .where("email", "==", req.body.email)
+    .get()
+    .then((snapshot) => {
+      if (snapshot.empty) {
+        // No matching user found
+        res.send({ error: "Invalid email or password" });
+      } else {
+        // User found, compare provided password to stored hashed password
+        snapshot.forEach((doc) => {
+          bcrypt.compare(
+            req.body.password,
+            doc.data().password,
+            (error, result) => {
+              if (error) {
+                res.send({ error: "Error comparing passwords: " + error });
+              } else if (result) {
+                // Passwords match, generate and send JWT
+                const user = { email: doc.data().email };
+                const token = generateJWT(user);
+                res.send({ message: "Logged in successfully", token: token });
+              } else {
+                // Passwords do not match
+                res.send({ error: "Invalid email or password" });
+              }
+            }
+          );
+        });
+      }
+    })
+    .catch((error) => {
+      // Error fetching user
+      res.send({ error: "Error fetching user: " + error });
+    });
 });
 
-// Set up a route for creating a resource
-app.post("/resources", (req, res) => {
-  try {
-    // Code to create the resource goes here
-    res.status(201).send();
-  } catch (error) {
-    // Redirect to the fail-safe route if an error occurs
-    res.redirect("/error");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
+
+
+
+app.post("/register", (req, res) => {
+  // Validate the request body
+  if (!req.body.email || !req.body.password) {
+    res.send({ error: "Missing email or password" });
+  } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(req.body.email)) {
+    // Invalid email format
+    res.send({ error: "Invalid email format" });
+  } else {
+    // Generate a unique code for the user
+    const code = Math.floor(Math.random() * 1000000).toString();
+    // Send the code to the user's email address
+    transporter
+      .sendMail({
+        from: "trinity@discord.com",
+        to: req.body.email,
+        subject: "Email Verification Code",
+        text: `Your email verification code is: ${code}`,
+      })
+      .then(() => {
+        // Code sent successfully, hash the user's password
+        bcrypt.hash(req.body.password, 10, (error, hash) => {
+          if (error) {
+            res.send({ error: "Error hashing password: " + error });
+          } else {
+            // Save the user to the database
+            db.collection("users")
+              .add({
+                email: req.body.email,
+                password: hash,
+                verificationCode: code,
+              })
+              .then((doc) => {
+                // User saved successfully
+                res.send({ message: "Verification code sent to email" });
+              })
+              .catch((error) => {
+                // Error saving user
+                res.send({ error: "Error registering user: " + error });
+              });
+          }
+        });
+      })
+      .catch((error) => {
+        // Error sending code
+        res.send({ error: "Error sending verification code: " + error });
+      });
   }
 });
 
-app.use((req, res, next) => {
-  // Set up a catch-all route to handle requests for non-existent routes
-  res.status(404).send({ error: "Route not found" });
+app.post("/verify-email", (req, res) => {
+  // Check if the provided code matches the code sent to the user's email
+  db.collection("users")
+    .where("email", "==", req.body.email)
+    .where("verificationCode", "==", req.body.code)
+    .get()
+    .then((snapshot) => {
+      if (snapshot.empty) {
+        // Code does not match
+        res.send({ error: "Invalid verification code" });
+      } else {
+        // Code matches, update the user's emailVerified field
+        snapshot.docs[0].ref
+          .update({
+            emailVerified: true,
+          })
+          .then(() => {
+            res.send({ message: "Email verified successfully" });
+          })
+          .catch((error) => {
+            res.send({ error: "Error verifying email: " + error });
+          });
+      }
+    })
+    .catch((error) => {
+      res.send({ error: "Error checking verification code: " + error });
+    });
 });
 
-app.listen(3000, () => {
-  console.log("API listening on port 3000");
-});
