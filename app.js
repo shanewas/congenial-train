@@ -1,24 +1,15 @@
 const express = require("express");
 const bodyParser = require("body-parser");
-const https = require("https");
 const jwt = require("jsonwebtoken");
-const bcrypt = require("bcrypt");
-const nodemailer = require("nodemailer");
 const dotenv = require("dotenv");
 const path = require("path");
 const axios = require("axios");
 const request = require("request");
-const uuid = require("uuid");
 const mongoose = require("mongoose");
-const session = require("express-session");
 
 // start the Redis server
 const User = require("./models/User");
 const Image = require("./models/Image");
-const Cache = require("./models/Cache");
-
-const cacheMiddleware = require("./middleware/cacheMiddleware");
-const { checkLogin } = require("./middleware/auth/authentication.js");
 
 const root = path.resolve(__dirname, ".");
 // Configure dotenv to read the .env file from the root folder
@@ -30,14 +21,7 @@ const app = express();
 app.use(express.json());
 
 //session
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET,
-    resave: false,
-    saveUninitialized: true,
-    cookie: { secure: false },
-  })
-);
+const isProduction = process.env.NODE_ENV === "production";
 
 // Connect to the database
 mongoose.connect(process.env.DATABASE_URL, {
@@ -46,17 +30,6 @@ mongoose.connect(process.env.DATABASE_URL, {
 });
 
 //
-const loginMiddleware = (req, res, next) => {
-  if (!req.session.isLoggedIn) {
-    //set a session variable to redirect the user to the page they were trying to access after login
-    req.session.redirectTo = req.path;
-    //redirect the user to the login page
-    return res.redirect(`/login`);
-  }
-  //if the user is logged in, proceed to the next middleware or route handler
-  next();
-};
-
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // app.use(cacheMiddleware);
@@ -81,7 +54,7 @@ app.get("/", (req, res) => {
 
 // app.use(loginMiddleware);
 //get user list from database
-app.get("/users", async (req, res) => {
+app.get("/users", verifyToken, async (req, res) => {
   try {
     const users = await User.find();
     //send the data to the client
@@ -107,156 +80,163 @@ app.get("/users/:id", (req, res) => {
     });
 });
 
+//similarly create a user by id route
+app.get("/users/:id/:token", (req, res) => {
+  const user = {
+    id: req.params.id,
+    token: req.params.token,
+  };
+  res.json(user);
+});
+
 // http://localhost:3000/imgur/u?link=https://i.imgur.com/RKBqY5q.png
 //=================================IMGUR API==================================
-app.get("/imgur/u", async (req, res) => {
+app.post("/imgur", verifyToken, async (req, res) => {
+  // Get the authorization header and check if it is a Bearer token
   let formData = {};
-  formData.image = req.query.link;
-  let description = "";
-  if (req.query.description) {
-    description = req.body.description;
-  }
+  let imageData = req.body.image || "";
+  let description = req.body.description || "";
 
   // Check if the image is a link or raw image data
-  if (image_data.startsWith("http")) {
+  if (imageData.startsWith("http")) {
     // If the image is a link, check if it is a valid link
     try {
-      await axios.head(image_data);
+      await axios.head(imageData);
     } catch {
-      return { error: "Invalid image link" };
+      return res.status(400).send({ error: "Invalid image !" });
     }
     //then convert the link to base64
-    image_data = await axios.get(image_data, { responseType: "arraybuffer" });
-    image_data = Buffer.from(image_data.data, "binary").toString("base64");
+    imageData = await axios.get(imageData, { responseType: "arraybuffer" });
+    imageData = Buffer.from(imageData.data, "binary").toString("base64");
   }
 
   //check if imageData is already in the database
-  const image_check = await Image.findOne({ image: image_data });
-  if (image_check) {
-    return `https://i.imgur.com/${image_check.id}.png`;
+  const imageCheck = await Image.findOne({ image: imageData });
+  if (imageCheck) {
+    return res.send({ link: imageCheck.link });
   }
-
-  request.post(
-    {
-      url: "https://api.imgur.com/3/image",
-      headers: {
-        Authorization: `Bearer ${req.session.access_token}`,
-      },
-      formData: formData,
-    },
-    (error, response, body) => {
-      if (error) {
-        reject(error);
-        return;
+  formData.image = imageData;
+  formData.description = description;
+  try {
+    const response = await axios.post(
+      "https://api.imgur.com/3/image",
+      formData,
+      {
+        headers: {
+          Authorization: `Bearer ${req.jwt.access_token}`,
+        },
       }
-
-      const { data, success } = JSON.parse(body);
-      if (!success) {
-        reject(new Error("Failed to upload image"));
-        return;
-      }
-      // return the response from the Imgur API
+    );
+    const { data, success } = response.data;
+    if (!success) {
+      throw new Error("Failed to upload image");
     }
-  );
-  // Save the response using Mongoose
-  const image = new Image({
-    id: json.data.id,
-    title: json.data.title,
-    description: json.data.description,
-    datetime: json.data.datetime,
-    type: json.data.type,
-    animated: json.data.animated,
-    width: json.data.width,
-    height: json.data.height,
-    size: json.data.size,
-    views: json.data.views,
-    bandwidth: json.data.bandwidth,
-    vote: json.data.vote,
-    favorite: json.data.favorite,
-    nsfw: json.data.nsfw,
-    section: json.data.section,
-    account_url: json.data.account_url,
-    account_id: json.data.account_id,
-    is_ad: json.data.is_ad,
-    in_most_viral: json.data.in_most_viral,
-    has_sound: json.data.has_sound,
-    tags: json.data.tags,
-    ad_type: json.data.ad_type,
-    ad_url: json.data.ad_url,
-    edited: json.data.edited,
-    in_gallery: json.data.in_gallery,
-    deletehash: json.data.deletehash,
-    name: json.data.name,
-    link: json.data.link,
-    image: image_data,
-  });
-
-  await image.save();
-  res.send(json.data.link);
+    // Save the response using Mongoose
+    const image = new Image({ ...data, image: imageData });
+    await image.save();
+    return res.send({ link: data.link });
+  } catch (error) {
+    return res.status(500).send({ error: "An error occurred" });
+  }
 });
 
-app.get("/imgur/d", async (req, res) => {
-  // let link = req.query.link;
-  // console.log(link);
-  // res.send(link);
-  res.send(await require("./imgur/delete").deleteImage(req, res));
+app.delete("/imgur", verifyToken, async (req, res) => {
+  let link = req.query.link;
+  console.log(link);
+  // Search the database for the deletehash associated with the link
+  const image = await Image.findOne({ link });
+  if (!image) {
+    return res.status(400).json({ error: "Invalid image link" });
+  }
+  const deletehash = image.deletehash;
+
+  // Delete the image from Imgur using the delete hash
+  try {
+    const response = await axios.delete(
+      `https://api.imgur.com/3/image/${deletehash}`,
+      {
+        headers: {
+          Authorization: `Bearer ${req.jwt.access_token}`,
+        },
+      }
+    );
+    const { data, success } = response.data;
+    console.log(data);
+    if (!success) {
+      throw new Error("Image deletion failed!");
+    }
+
+    // Remove the image from the database
+    await Image.findOneAndRemove({ deletehash });
+    return res.status(200).json({ message: "Image deleted" });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "An error occurred" });
+  }
 });
+
 //============================================================================
 
 // ===============================
 // create a protected route that requires authentication
-app.get("/protected", (req, res) => {
-  if (req.session.accessToken) {
-    checkLogin(req).then((isValid) => {
-      if (isValid) {
-        //continue to the protected route
-        let accessToken = req.session.accessToken;
+app.get("/protected", async (req, res) => {
+  // In the /protected route
+  let jwttoken = req.query.jwttoken;
+  let accessToken = "";
+  try {
+    // Verify the JWT and extract the access token and refresh token
+    const decoded = jwt.verify(jwttoken, process.env.JWT_SECRET);
+    accessToken = decoded.access_token;
+    const refreshToken = decoded.refresh_token;
+    // Check if the JWT has expired
+    if (Date.now() / 1000 > decoded.exp) {
+      // If the JWT has expired, use the refresh token to obtain a new access token
+      jwttoken = await refreshToken(refreshToken);
 
-        // make an API request using the access token
-        request.get(
-          {
-            url: "https://api.imgur.com/3/account/me",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-            },
-          },
-          async (err, httpResponse, body) => {
-            if (err) {
-              return res.send("Error making API request");
-            }
-
-            // parse the API response body to an object
-            const data = JSON.parse(body);
-
-            // find the user in the database and update the document
-            let user = await User.findOneAndUpdate(
-              { id: data.data.id },
-              { $set: { id: data.data.id, url: data.data.url } },
-              { new: true }
-            );
-            if (!user) {
-              user = new User({
-                id: data.data.id,
-                url: data.data.url,
-              });
-              await user.save();
-            }
-            if (req.session.redirectTo) {
-              const redirectTo = req.session.redirectTo;
-              delete req.session.redirectTo;
-              res.redirect(redirectTo);
-            } else {
-              res.redirect("/");
-            }
-          }
-        );
-      } else {
-        res.send("You are not logged in");
-      }
-    });
-  } else {
-    res.send("You are not logged in");
+      // Set the new JWT as a cookie
+      res.cookie("jwttoken", updatedJwt, {
+        httpOnly: true,
+        sameSite: "lax",
+      });
+    }
+  } catch (error) {
+    // If the JWT is invalid or has expired, redirect the user to the login page
+    return res.redirect("/login");
   }
+
+  // Make an API request using the access token
+  request.get(
+    {
+      url: "https://api.imgur.com/3/account/me",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+    async (err, httpResponse, body) => {
+      if (err) {
+        return res.send("Error making API request");
+      }
+
+      // parse the API response body to an object
+      const data = JSON.parse(body);
+
+      // find the user in the database and update the document
+      let user = await User.findOneAndUpdate(
+        { id: data.data.id },
+        { $set: { id: data.data.id, url: data.data.url } },
+        { new: true }
+      );
+      if (!user) {
+        user = new User({
+          id: data.data.id,
+          url: data.data.url,
+        });
+        await user.save();
+      }
+      //redirect to user id
+      res.redirect(`/users/${user.id}/${jwttoken}`);
+    }
+  );
 });
 
 //req.session.destroy();
@@ -285,21 +265,67 @@ app.get("/callback", (req, res) => {
         return res.status(500).send(error);
       }
       const { access_token, refresh_token, expires_in } = JSON.parse(body);
-
-      // Save the access token and refresh token in the session.
-      req.session.accessToken = access_token;
-      req.session.refreshToken = refresh_token;
-
-      // Redirect the user to the home page.
-      // return res.redirect("/");
-      //redirect to protected with req session
-      //want to go the route user wanted to go before login page
-      return res.redirect("/protected");
+      //change the expires in to jwt exp formate
+      exp = Date.now() / 1000 + expires_in;
+      const jwttoken = jwt.sign(
+        {
+          access_token: access_token,
+          refresh_token: refresh_token,
+          exp: exp,
+        },
+        process.env.JWT_SECRET
+      );
+      res.redirect(`/protected?jwttoken=${jwttoken}`);
     }
   );
 });
 
-// // Set up the fail-safe route
+async function refreshToken(refreshToken) {
+  const url = "https://api.imgur.com/oauth2/token";
+  const options = {
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: process.env.IMGUR_CLIENT_ID,
+    client_secret: process.env.IMGUR_SECRET,
+  };
+  const response = await axios.post(url, options);
+  const { data } = response;
+  const { access_token, expires_in } = data;
+  const decoded = jwt.decode(jwttoken);
+  const jwttoken = jwt.sign(
+    { ...decoded, access_token, expires_in },
+    process.env.JWT_SECRET,
+    { expiresIn: expires_in }
+  );
+  //destructure the jwttoken
+  return jwttoken;
+}
+
+async function verifyToken(req, res, next) {
+  const authorizationHeader = req.headers["authorization"];
+  if (!authorizationHeader || !authorizationHeader.startsWith("Bearer ")) {
+    return res.status(401).send({ error: "Unauthorized" });
+  }
+  const token = authorizationHeader.split(" ")[1];
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (Date.now() / 1000 > decoded.exp) {
+      if (decoded.refresh_token) {
+        const newToken = await refreshToken(decoded.refresh_token);
+        req.headers["authorization"] = `Bearer ${newToken}`;
+        req.jwt = jwt.verify(newToken, process.env.JWT_SECRET);
+        next();
+      } else {
+        return res.status(401).send({ error: "Unauthorized" });
+      }
+    } else {
+      req.jwt = decoded;
+      next();
+    }
+  } catch (error) {
+    return res.status(401).send({ error: "Unauthorized" });
+  }
+}
 // app.use((err, req, res, next) => {
 //   // Handle the error and return a suitable response to the client
 //   res
