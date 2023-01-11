@@ -8,14 +8,13 @@ const UserSchema = new mongoose.Schema({
   reputation: { type: Number },
   created: { type: Date },
   role: { type: String },
-  pro_expiration: { type: Date },
   images: [
     {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Image",
     },
   ],
-  delay: { type: Number, min: 1, max: 60 },
+  delay: { type: Number, min: 1, max: 30 },
 });
 
 const User = mongoose.model("User", UserSchema);

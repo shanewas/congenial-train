@@ -65,6 +65,25 @@ app.get("/users", verifyToken, async (req, res) => {
   }
 });
 
+//set delay for user
+app.post("/users/delay", verifyToken, async (req, res) => {
+  //delay min 1 max 30. set a validation
+  if (req.body.delay < 1 || req.body.delay > 30) {
+    return res.status(400).send("Delay must be between 1 and 30");
+  }
+  const user = await User.findOneAndUpdate(
+    { id: req.jwt.userid },
+    {
+      $set: {
+        delay: req.body.delay,
+      },
+    },
+    { upsert: true, new: true }
+  );
+  user.save();
+  res.json({ delay: user.delay });
+});
+
 //similarly create a user by id route
 app.get("/users/:id", (req, res) => {
   const { id } = req.params;
@@ -233,7 +252,6 @@ app.get("/protected", async (req, res) => {
               bio: data.data.bio,
               reputation: data.data.reputation,
               created: data.data.created,
-              pro_expiration: data.data.pro_expiration,
             },
           },
           { upsert: true, new: true }
@@ -360,13 +378,6 @@ async function verifyToken(req, res, next) {
     return res.status(401).send({ error: "Unauthorized" });
   }
 }
-
-// app.use((err, req, res, next) => {
-//   // Handle the error and return a suitable response to the client
-//   res
-//     .status(500)
-//     .send({ error: "An error occurred while processing the request" });
-// });
 
 app.listen(port, () => {
   console.log(`API listening on port ${port}`);
