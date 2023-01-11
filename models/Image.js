@@ -30,6 +30,7 @@ const ImageSchema = new mongoose.Schema({
   name: String,
   link: String,
   image: String,
+  rating: Number,
 });
 
 const Image = mongoose.model("Image", ImageSchema);

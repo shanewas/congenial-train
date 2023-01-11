@@ -116,12 +116,14 @@ app.post("/imgur", verifyToken, async (req, res) => {
   let formData = {};
   let imageData = req.body.image || "";
   let description = req.body.description || "";
+  let _link = "";
 
   // Check if the image is a link or raw image data
   if (imageData.startsWith("http")) {
     // If the image is a link, check if it is a valid link
     try {
       await axios.head(imageData);
+      let _link = imageData;
     } catch {
       return res.status(400).send({ error: "Invalid image !" });
     }
@@ -131,7 +133,9 @@ app.post("/imgur", verifyToken, async (req, res) => {
   }
 
   //check if imageData is already in the database
-  const imageCheck = await Image.findOne({ image: imageData });
+  const imageCheck = await Image.findOne({
+    $or: [{ image: imageData }, { link: _link }],
+  });
   if (imageCheck) {
     return res.send({ link: imageCheck.link });
   }
@@ -151,6 +155,30 @@ app.post("/imgur", verifyToken, async (req, res) => {
     if (!success) {
       throw new Error("Failed to upload image");
     }
+
+    try {
+      const url = "https://fwmodel.onrender.com/process-image";
+      const headers = {
+        Authorization: `${process.env.MODEL_SECRET}`,
+      };
+      const res_rating = await axios.post(
+        url,
+        {
+          image_links: [data.link],
+        },
+        { headers }
+      );
+      const rating = res_rating.data[0];
+      const s_rating = rating[Object.keys(rating)[0]].sexy;
+      console.log(s_rating);
+    } catch (err) {
+      return res.status(404).send({
+        error: "An error occurred",
+        link: data.link,
+        deletehash: data.deletehash,
+      });
+    }
+
     // Save the response using Mongoose
     const image = new Image({ ...data, image: imageData });
     await image.save();
@@ -162,7 +190,7 @@ app.post("/imgur", verifyToken, async (req, res) => {
     await user.save();
     return res.send({ link: data.link });
   } catch (error) {
-    return res.status(500).send({ error: "An error occurred" });
+    return res.status(500).send({ error: "An error occurred", err: error });
   }
 });
 
@@ -208,6 +236,29 @@ app.delete("/imgur", verifyToken, async (req, res) => {
   }
 });
 
+//create another delete route just using deletehash
+app.delete("/imgur/:deletehash", verifyToken, async (req, res) => {
+  let deletehash = req.params.deletehash;
+  try {
+    const response = await axios.delete(
+      `https://api.imgur.com/3/image/${deletehash}`,
+      {
+        headers: {
+          Authorization: `Bearer ${req.jwt.access_token}`,
+        },
+      }
+    );
+    const { data, success } = response.data;
+    console.log(data);
+    if (!success) {
+      throw new Error("Image deletion failed!");
+    }
+    return res.status(200).json({ message: "Image deleted" });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: "An error occurred" });
+  }
+});
 //============================================================================
 
 // ===============================
