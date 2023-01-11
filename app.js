@@ -10,6 +10,7 @@ const mongoose = require("mongoose");
 // start the Redis server
 const User = require("./models/User");
 const Image = require("./models/Image");
+const { findOneAndUpdate } = require("./models/User");
 
 const root = path.resolve(__dirname, ".");
 // Configure dotenv to read the .env file from the root folder
@@ -134,6 +135,12 @@ app.post("/imgur", verifyToken, async (req, res) => {
     // Save the response using Mongoose
     const image = new Image({ ...data, image: imageData });
     await image.save();
+    const user = await User.findOneAndUpdate(
+      { id: req.jwt.userid },
+      { $push: { images: image._id } },
+      { upsert: true, new: true }
+    );
+    await user.save();
     return res.send({ link: data.link });
   } catch (error) {
     return res.status(500).send({ error: "An error occurred" });
@@ -168,6 +175,13 @@ app.delete("/imgur", verifyToken, async (req, res) => {
 
     // Remove the image from the database
     await Image.findOneAndRemove({ deletehash });
+    //delete the entry from images under user table
+    const user = await User.findOneAndUpdate(
+      { id: req.jwt.userid },
+      { $pull: { images: image._id } },
+      { upsert: true, new: true }
+    );
+    await user.save();
     return res.status(200).json({ message: "Image deleted" });
   } catch (error) {
     console.error(error);
@@ -180,70 +194,83 @@ app.delete("/imgur", verifyToken, async (req, res) => {
 // ===============================
 // create a protected route that requires authentication
 app.get("/protected", async (req, res) => {
-  // In the /protected route
   let jwttoken = req.query.jwttoken;
-  let accessToken = "";
   try {
     // Verify the JWT and extract the access token and refresh token
     const decoded = jwt.verify(jwttoken, process.env.JWT_SECRET);
-    accessToken = decoded.access_token;
+    const accessToken = decoded.access_token;
     const refreshToken = decoded.refresh_token;
     // Check if the JWT has expired
     if (Date.now() / 1000 > decoded.exp) {
       // If the JWT has expired, use the refresh token to obtain a new access token
       jwttoken = await refreshToken(refreshToken);
-
-      // Set the new JWT as a cookie
-      res.cookie("jwttoken", updatedJwt, {
-        httpOnly: true,
-        sameSite: "lax",
-      });
     }
-  } catch (error) {
-    // If the JWT is invalid or has expired, redirect the user to the login page
-    return res.redirect("/login");
-  }
 
-  // Make an API request using the access token
-  request.get(
-    {
-      url: "https://api.imgur.com/3/account/me",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
+    // Make an API request using the access token
+    request.get(
+      {
+        url: "https://api.imgur.com/3/account/me",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
       },
-    },
-    async (err, httpResponse, body) => {
-      if (err) {
-        return res.send("Error making API request");
-      }
+      async (err, httpResponse, body) => {
+        if (err) {
+          return res.status(500).json({ error: "Error making API request" });
+        }
 
-      // parse the API response body to an object
-      const data = JSON.parse(body);
-
-      // find the user in the database and update the document
-      let user = await User.findOneAndUpdate(
-        { id: data.data.id },
-        { $set: { id: data.data.id, url: data.data.url } },
-        { new: true }
-      );
-      if (!user) {
-        user = new User({
-          id: data.data.id,
-          url: data.data.url,
-        });
+        // parse the API response body to an object
+        const data = JSON.parse(body);
+        // find or create the user in the database and update the document
+        // map the user data from the API response to the user model
+        let user = await User.findOneAndUpdate(
+          { id: data.data.id },
+          {
+            $set: {
+              id: data.data.id,
+              url: data.data.url,
+              token: jwttoken,
+              bio: data.data.bio,
+              reputation: data.data.reputation,
+              created: data.data.created,
+              pro_expiration: data.data.pro_expiration,
+            },
+          },
+          { upsert: true, new: true }
+        );
         await user.save();
+        // Set the new JWT as a cookie
+        res.cookie("jwttoken", jwttoken, {
+          httpOnly: true,
+          sameSite: "lax",
+        });
+        // Respond with the updated user and new JWT token
+        res.json(user);
       }
-      //redirect to user id
-      res.redirect(`/users/${user.id}/${jwttoken}`);
-    }
-  );
+    );
+  } catch (error) {
+    // If the JWT is invalid or has expired, respond with a 401 status
+    return res.status(401).json({ error: "Unauthorized" });
+  }
 });
 
-//req.session.destroy();
-app.get("/logout", (req, res) => {
-  req.session.destroy();
-  res.redirect("/");
+app.delete("/logout", async (req, res) => {
+  const authorizationHeader = req.headers["authorization"];
+  if (!authorizationHeader || !authorizationHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const token = authorizationHeader.split(" ")[1];
+
+  try {
+    // Find the user in the database by token and clear the token field
+    await User.findOneAndUpdate({ token: token }, { $set: { token: null } });
+    res.clearCookie("jwttoken");
+    return res.status(200).json({ message: "Successfully logged out" });
+  } catch (error) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
 });
+
 app.get("/callback", (req, res) => {
   console.log("callback");
   const { code } = req.query;
@@ -318,14 +345,22 @@ async function verifyToken(req, res, next) {
       } else {
         return res.status(401).send({ error: "Unauthorized" });
       }
-    } else {
-      req.jwt = decoded;
-      next();
     }
+    // Check the provided token with the stored token under the user's token field
+    const user = await User.findOne({ token });
+    if (!user) {
+      return res.status(401).send({ error: "Unauthorized" });
+    }
+    //append userid with the decoded jwt
+    decoded.userid = user.id;
+    console.log(user.id);
+    req.jwt = decoded;
+    next();
   } catch (error) {
     return res.status(401).send({ error: "Unauthorized" });
   }
 }
+
 // app.use((err, req, res, next) => {
 //   // Handle the error and return a suitable response to the client
 //   res
