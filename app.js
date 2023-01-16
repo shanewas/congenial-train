@@ -85,7 +85,7 @@ app.post("/users/delay", verifyToken, async (req, res) => {
 });
 
 //similarly create a user by id route
-app.get("/users/:id", (req, res) => {
+app.get("/users/:id", verifyToken, (req, res) => {
   const { id } = req.params;
   User.findById(id)
     .then((user) => {
@@ -123,7 +123,7 @@ app.post("/imgur", verifyToken, async (req, res) => {
     // If the image is a link, check if it is a valid link
     try {
       await axios.head(imageData);
-      let _link = imageData;
+      _link = imageData;
     } catch {
       return res.status(400).send({ error: "Invalid image !" });
     }
@@ -131,7 +131,7 @@ app.post("/imgur", verifyToken, async (req, res) => {
     imageData = await axios.get(imageData, { responseType: "arraybuffer" });
     imageData = Buffer.from(imageData.data, "binary").toString("base64");
   }
-
+  //TO-DO: check if imgur link 
   //check if imageData is already in the database
   const imageCheck = await Image.findOne({
     $or: [{ image: imageData }, { link: _link }],
@@ -169,29 +169,115 @@ app.post("/imgur", verifyToken, async (req, res) => {
         { headers }
       );
       const rating = res_rating.data[0];
-      const s_rating = rating[Object.keys(rating)[0]].sexy;
+      const s_rating =
+        ((rating[Object.keys(rating)[0]].porn +
+          rating[Object.keys(rating)[0]].sexy) /
+          (rating[Object.keys(rating)[0]].neutral +
+            rating[Object.keys(rating)[0]].porn +
+            rating[Object.keys(rating)[0]].sexy)) *
+        100;
+
       console.log(s_rating);
+      const image = new Image({ ...data, user: req.jwt._id, rating: s_rating });
+      await image.save();
+      const user = await User.findOneAndUpdate(
+        { id: req.jwt.userid },
+        { $push: { images: image._id } },
+        { upsert: true, new: true }
+      );
+      await user.save();
     } catch (err) {
       return res.status(404).send({
-        error: "An error occurred",
+        error: err,
         link: data.link,
         deletehash: data.deletehash,
       });
     }
-
-    // Save the response using Mongoose
-    const image = new Image({ ...data, image: imageData });
-    await image.save();
-    const user = await User.findOneAndUpdate(
-      { id: req.jwt.userid },
-      { $push: { images: image._id } },
-      { upsert: true, new: true }
-    );
-    await user.save();
     return res.send({ link: data.link });
   } catch (error) {
     return res.status(500).send({ error: "An error occurred", err: error });
   }
+});
+
+//imgur get images by user id
+app.get("/imgur/u", verifyToken, async (req, res) => {
+  const user = await User.findOne({ id: req.jwt.userid });
+  if (!user) {
+    return res.status(404).send({ error: "User not found" });
+  }
+  const images = await Image.find({ _id: { $in: user.images } });
+  res.send(images);
+});
+
+//imgur get images by user id and a range of images ex: 5 images or 20 images
+app.get("/imgur/u/:range", verifyToken, async (req, res) => {
+  const user = await User.findOne({ id: req.jwt.userid });
+  if (!user) {
+    return res.status(404).send({ error: "User not found" });
+  }
+  const images = await Image.find({ _id: { $in: user.images } })
+    .sort({ createdAt: -1 })
+    .limit(parseInt(req.params.range));
+  res.send(images);
+});
+
+//delete an image by id from database
+app.delete("/imgur/:param", verifyToken, async (req, res) => {
+  let param = req.params.param;
+  let isId = mongoose.Types.ObjectId.isValid(param);
+  let image;
+  if (isId) {
+    image = await Image.findById(param);
+  } else {
+    image = await Image.findOne({ deletehash: param });
+  }
+  if (!image) {
+    return res.status(404).send({ error: "Image not found" });
+  }
+  try {
+    const response = await axios.delete(
+      `https://api.imgur.com/3/image/${image.deletehash}`,
+      {
+        headers: {
+          Authorization: `Bearer ${req.jwt.access_token}`,
+        },
+      }
+    );
+    const { data, success } = response.data;
+    if (!success) {
+      throw new Error("Failed to delete image");
+    }
+    if (isId) {
+      await Image.findByIdAndDelete(param);
+    } else {
+      await Image.findOneAndDelete({ deletehash: param });
+    }
+    await User.findOneAndUpdate(
+      { id: req.jwt.userid },
+      { $pull: { images: image._id } },
+      { upsert: true, new: true }
+    );
+    res.send({ success: true });
+  } catch (error) {
+    return res.status(500).send({ error: "An error occurred", err: error });
+  }
+});
+
+//a route to sync user images array list and images. to check if id of the image exists in image table
+app.get("/imgur/sync", verifyToken, async (req, res) => {
+  const user = await User.findOne({ id: req.jwt.userid });
+  if (!user) {
+    return res.status(404).send({ error: "User not found" });
+  }
+  const images = await Image.find({ _id: { $in: user.images } });
+  //delete image id in user if dosent exist in images table
+  for (let i = 0; i < user.images.length; i++) {
+    if (!images.find((image) => image._id == user.images[i])) {
+      user.images.splice(i, 1);
+    }
+  }
+  await user.save();
+  res.send({ success: true });
 });
 
 app.delete("/imgur", verifyToken, async (req, res) => {
@@ -236,29 +322,6 @@ app.delete("/imgur", verifyToken, async (req, res) => {
   }
 });
 
-//create another delete route just using deletehash
-app.delete("/imgur/:deletehash", verifyToken, async (req, res) => {
-  let deletehash = req.params.deletehash;
-  try {
-    const response = await axios.delete(
-      `https://api.imgur.com/3/image/${deletehash}`,
-      {
-        headers: {
-          Authorization: `Bearer ${req.jwt.access_token}`,
-        },
-      }
-    );
-    const { data, success } = response.data;
-    console.log(data);
-    if (!success) {
-      throw new Error("Image deletion failed!");
-    }
-    return res.status(200).json({ message: "Image deleted" });
-  } catch (error) {
-    console.error(error);
-    return res.status(500).json({ error: "An error occurred" });
-  }
-});
 //============================================================================
 
 // ===============================
@@ -422,12 +485,56 @@ async function verifyToken(req, res, next) {
     }
     //append userid with the decoded jwt
     decoded.userid = user.id;
+    decoded._id = user._id;
     console.log(user.id);
     req.jwt = decoded;
     next();
   } catch (error) {
     return res.status(401).send({ error: "Unauthorized" });
   }
+}
+
+function getImagesByRating(min_rating) {
+  return Image.countDocuments({ rating: { $gte: min_rating } }).then(
+    (count) => {
+      const max_rating = min_rating + 100;
+      const log_rate = Math.log(count) / (max_rating - min_rating);
+      return Image.find({ rating: { $gte: min_rating, $lte: max_rating } })
+        .sort({ rating: log_rate * Math.log(rating) })
+        .exec();
+    }
+  );
+}
+
+function getImagesByNameAndUser(name, user) {
+  return Image.find({
+    $text: { $search: name },
+    user: user,
+  }).exec();
+}
+
+function getImages(min_rating, name, user) {
+  let query = Image.find();
+  if (min_rating) {
+    const max_rating = min_rating + 100;
+    const log_rate = Math.log(count) / (max_rating - min_rating);
+    query = query
+      .where("rating")
+      .gte(min_rating)
+      .lte(max_rating)
+      .sort({ rating: log_rate * Math.log(rating) });
+  }
+  if (name) {
+    query = query.find({
+      $text: { $search: name },
+    });
+  }
+  if (user) {
+    query = query.find({
+      user: user,
+    });
+  }
+  return query.exec();
 }
 
 app.listen(port, () => {

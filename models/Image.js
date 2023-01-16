@@ -31,8 +31,14 @@ const ImageSchema = new mongoose.Schema({
   link: String,
   image: String,
   rating: Number,
+  user: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+  ],
 });
-
+ImageSchema.index({name: 1, id: 1});
 const Image = mongoose.model("Image", ImageSchema);
 
 module.exports = Image;
